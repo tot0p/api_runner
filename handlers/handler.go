@@ -35,31 +35,9 @@ type Container struct {
 	Image  string `json:"Image"`
 }
 
-func GetVMs(c *gin.Context) {
-	containers := GetContainerFromVM()
-	var containerList []Container
-	for _, element := range containers {
-		containerList = append(containerList, Container{
-			ID:     element.ID,
-			IP:     element.NetworkSettings.Networks["bridge"].IPAddress,
-			Name:   element.Names[0],
-			State:  element.State,
-			Status: element.Status,
-			Image:  element.Image,
-		})
-	}
-	c.IndentedJSON(http.StatusOK, containerList)
-}
-
-func GetContainers(c *gin.Context) {
-	id := c.Param("id")
-	for _, vm := range VMs {
-		if vm.ID == id {
-			c.IndentedJSON(http.StatusOK, vm)
-			return
-		}
-	}
-	c.IndentedJSON(http.StatusNotFound, gin.H{"message": "container not found"})
+type ContainerRequest struct {
+	ImageName     string `json:"imageName"`
+	ContainerName string `json:"containerName"`
 }
 
 func CreateVM(c *gin.Context) {
@@ -85,7 +63,7 @@ func DeleteInstance(c *gin.Context) {
 	c.IndentedJSON(http.StatusNotFound, gin.H{"message": "instance not found"})
 }
 
-func GetContainerFromVM() []types.Container {
+func GetAllContainersFromVM(c *gin.Context) {
 	cli, err := client.NewClientWithOpts(client.FromEnv)
 	if err != nil {
 		fmt.Println("Unable to create docker client")
@@ -96,7 +74,117 @@ func GetContainerFromVM() []types.Container {
 	if err != nil {
 		panic(err)
 	}
-	return containers
+	var containerList []Container
+	for _, contained := range containers {
+		containerList = append(containerList, Container{
+			ID:     contained.ID,
+			IP:     contained.NetworkSettings.Networks["bridge"].IPAddress,
+			Name:   contained.Names[0],
+			State:  contained.State,
+			Status: contained.Status,
+			Image:  contained.Image,
+		})
+	}
+	c.IndentedJSON(http.StatusOK, containerList)
+}
+
+func GetContainersFromVM(c *gin.Context) {
+	cli, err := client.NewClientWithOpts(client.FromEnv)
+	if err != nil {
+		fmt.Println("Unable to create docker client")
+		panic(err)
+	}
+	cli.NegotiateAPIVersion(context.Background())
+	containers, err := cli.ContainerList(context.Background(), container.ListOptions{All: true})
+	if err != nil {
+		panic(err)
+	}
+
+	id := c.Param("id")
+	for _, contained := range containers {
+		if contained.ID == id {
+			c.IndentedJSON(http.StatusOK, contained)
+			return
+		}
+	}
+	c.IndentedJSON(http.StatusNotFound, gin.H{"message": "container not found"})
+}
+
+// CreateContainer creates a container and starts it
+func CreateContainer(c *gin.Context) {
+	cli, err := client.NewClientWithOpts(client.FromEnv)
+	if err != nil {
+		fmt.Println("Unable to create docker client")
+		panic(err)
+	}
+	cli.NegotiateAPIVersion(context.Background())
+
+	// To set a specific image version, use the following format: imageName:version
+	var containerRequest ContainerRequest
+	err = c.BindJSON(&containerRequest)
+	if err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+
+	// check if the image exists
+	_, _, err = cli.ImageInspectWithRaw(context.Background(), containerRequest.ImageName)
+	if err != nil {
+		// pull the image if it doesn't exist
+		reader, err := cli.ImagePull(context.Background(), containerRequest.ImageName, types.ImagePullOptions{})
+		if err != nil {
+			fmt.Println("Unable to pull the image")
+			panic(err)
+		}
+		defer reader.Close()
+		_, err = io.ReadAll(reader)
+		if err != nil {
+			panic(err)
+		}
+		_, _, err = cli.ImageInspectWithRaw(context.Background(), containerRequest.ImageName)
+		if err != nil {
+			fmt.Println("Unable to inspect the image")
+			panic(err)
+		}
+	}
+
+	freePort, err := GetFreePort()
+	if err != nil {
+		fmt.Println("Unable to get a free port")
+		panic(err)
+	}
+	hostBinding := nat.PortBinding{
+		HostIP:   "0.0.0.0",
+		HostPort: fmt.Sprintf("%d", freePort),
+	}
+
+	var portBinding = make(nat.PortMap)
+	containerPort, err := nat.NewPort("tcp", fmt.Sprintf("%d", freePort))
+	if err != nil {
+		panic("Unable to get the port")
+	}
+	portBinding[containerPort] = []nat.PortBinding{hostBinding}
+
+	// Create a container
+	cont, err := cli.ContainerCreate(
+		context.Background(),
+		&container.Config{
+			Image: containerRequest.ImageName,
+		},
+		&container.HostConfig{PortBindings: portBinding},
+		nil,
+		nil,
+		containerRequest.ContainerName,
+	)
+	if err != nil {
+		fmt.Println("Unable to create the container")
+		panic(err)
+	}
+	err = cli.ContainerStart(context.Background(), cont.ID, container.StartOptions{})
+	if err != nil {
+		fmt.Println("Unable to start the container")
+		panic(err)
+	}
 }
 
 func GetFreePort() (port int, err error) {
@@ -111,7 +199,43 @@ func GetFreePort() (port int, err error) {
 	return
 }
 
-func InstanciateContainer(imageName, containerName string, portBindings []int) (map[int]int, error) {
+func DeleteContainer(c *gin.Context) {
+	cli, err := client.NewClientWithOpts(client.FromEnv)
+	if err != nil {
+		fmt.Println("Unable to create docker client")
+		panic(err)
+	}
+	cli.NegotiateAPIVersion(context.Background())
+
+	id := c.Param("id")
+	StopContainer(id)
+
+	err = cli.ContainerRemove(context.Background(), id, container.RemoveOptions{})
+	if err != nil {
+		fmt.Println("Unable to remove the container ", id)
+		panic(err)
+	}
+	fmt.Println("Container ", id, " removed")
+}
+
+func StopContainer(id string) {
+	cli, err := client.NewClientWithOpts(client.FromEnv)
+	if err != nil {
+		fmt.Println("Unable to create docker client")
+		panic(err)
+	}
+	cli.NegotiateAPIVersion(context.Background())
+
+	err = cli.ContainerStop(context.Background(), id, container.StopOptions{})
+	if err != nil {
+		fmt.Println("Unable to stop the container ", id)
+		panic(err)
+	}
+	fmt.Println("Container ", id, " stopped")
+
+}
+
+func InstantiateContainer(imageName, containerName string, portBindings []int) (map[int]int, error) {
 	cli, err := client.NewClientWithOpts(client.FromEnv)
 	if err != nil {
 		fmt.Println("Unable to create docker client")
