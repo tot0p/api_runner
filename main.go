@@ -11,6 +11,7 @@ func main() {
 	router.GET("/vm", handlers.GetAllContainersFromVM)
 	router.GET("/vm/:id/containers", handlers.GetContainersFromVM)
 	router.POST("/vm", handlers.CreateContainer)
+	router.POST("/build", handlers.BuildImage)
 	router.DELETE("/vm/:id", handlers.DeleteContainer)
 
 	fmt.Println("Server is running on localhost:8080")

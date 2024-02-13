@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	tar2 "archive/tar"
+	"bytes"
 	"context"
 	"fmt"
 	"github.com/docker/docker/api/types"
@@ -38,6 +40,11 @@ type Container struct {
 type ContainerRequest struct {
 	ImageName     string `json:"imageName"`
 	ContainerName string `json:"containerName"`
+	Port          string `json:"port"`
+}
+
+type ImageRequest struct {
+	RepositoryURL string `json:"repository"`
 }
 
 func CreateVM(c *gin.Context) {
@@ -148,30 +155,19 @@ func CreateContainer(c *gin.Context) {
 		}
 	}
 
-	freePort, err := GetFreePort()
-	if err != nil {
-		fmt.Println("Unable to get a free port")
-		panic(err)
-	}
-	hostBinding := nat.PortBinding{
-		HostIP:   "0.0.0.0",
-		HostPort: fmt.Sprintf("%d", freePort),
-	}
-
-	var portBinding = make(nat.PortMap)
-	containerPort, err := nat.NewPort("tcp", fmt.Sprintf("%d", freePort))
-	if err != nil {
-		panic("Unable to get the port")
-	}
-	portBinding[containerPort] = []nat.PortBinding{hostBinding}
+	var portBinding nat.Port
+	portBinding, err = nat.NewPort("tcp", containerRequest.Port)
 
 	// Create a container
 	cont, err := cli.ContainerCreate(
 		context.Background(),
 		&container.Config{
 			Image: containerRequest.ImageName,
+			ExposedPorts: nat.PortSet{
+				portBinding: struct{}{},
+			},
 		},
-		&container.HostConfig{PortBindings: portBinding},
+		&container.HostConfig{},
 		nil,
 		nil,
 		containerRequest.ContainerName,
@@ -187,16 +183,75 @@ func CreateContainer(c *gin.Context) {
 	}
 }
 
-func GetFreePort() (port int, err error) {
-	var a *net.TCPAddr
-	if a, err = net.ResolveTCPAddr("tcp", "localhost:0"); err == nil {
-		var l *net.TCPListener
-		if l, err = net.ListenTCP("tcp", a); err == nil {
-			defer l.Close()
-			return l.Addr().(*net.TCPAddr).Port, nil
-		}
+func BuildImage(c *gin.Context) {
+	cli, err := client.NewClientWithOpts(client.FromEnv)
+	if err != nil {
+		fmt.Println("Unable to create docker client")
+		panic(err)
 	}
-	return
+	cli.NegotiateAPIVersion(context.Background())
+
+	var imageRequest ImageRequest
+	err = c.BindJSON(&imageRequest)
+	if err != nil {
+		c.JSON(400, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Create a tar file with the Dockerfile
+	var buf bytes.Buffer
+	tarWriter := tar2.NewWriter(&buf)
+
+	contents := `FROM nginx
+COPY . /usr/share/nginx/html
+CMD ["nginx", "-g", "daemon off;"]
+`
+
+	header := &tar2.Header{
+		Name:     "Dockerfile",
+		Mode:     0777,
+		Size:     int64(len(contents)),
+		Typeflag: tar2.TypeReg,
+	}
+
+	if err := tarWriter.WriteHeader(header); err != nil {
+		fmt.Println("Unable to write the header")
+		panic(err)
+	}
+
+	if _, err := tarWriter.Write([]byte(contents)); err != nil {
+		fmt.Println("Unable to write the content")
+		panic(err)
+	}
+
+	if err := tarWriter.Close(); err != nil {
+		fmt.Println("Unable to close the writer")
+		panic(err)
+	}
+
+	reader := bytes.NewReader(buf.Bytes())
+
+	BuildOptions := types.ImageBuildOptions{
+		Context:    reader,
+		Dockerfile: "Dockerfile",
+		Tags:       []string{"nosql:1.0.0"},
+	}
+
+	resp, err := cli.ImageBuild(context.Background(), reader, BuildOptions)
+	if err != nil {
+		fmt.Println("Unable to build the image")
+		panic(err)
+	}
+
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		fmt.Println("Unable to read the response")
+		panic(err)
+	}
+	fmt.Println(string(body))
+
+	fmt.Println("Image built")
 }
 
 func DeleteContainer(c *gin.Context) {
@@ -316,4 +371,16 @@ func InstantiateContainer(imageName, containerName string, portBindings []int) (
 		ext[int(k.Int())] = port
 	}
 	return ext, nil
+}
+
+func GetFreePort() (port int, err error) {
+	var a *net.TCPAddr
+	if a, err = net.ResolveTCPAddr("tcp", "localhost:0"); err == nil {
+		var l *net.TCPListener
+		if l, err = net.ListenTCP("tcp", a); err == nil {
+			defer l.Close()
+			return l.Addr().(*net.TCPAddr).Port, nil
+		}
+	}
+	return
 }
