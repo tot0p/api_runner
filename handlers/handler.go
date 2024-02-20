@@ -212,7 +212,7 @@ func CreateContainer(c *gin.Context) {
 		}
 		ports[k.Int()] = port
 	}
-
+	LogContainerCreation(cont.ID, containerRequest.Link)
 	c.IndentedJSON(http.StatusOK, gin.H{"message": "Container with id " + cont.ID + " created and started", "id": cont.ID, "ports": ports})
 }
 
@@ -269,15 +269,52 @@ func DeleteContainer(c *gin.Context) {
 	cli.NegotiateAPIVersion(context.Background())
 
 	id := c.Param("id")
-	StopContainer(id)
+	// check if the container exists
+	_, err = cli.ContainerInspect(context.Background(), id)
+	if err != nil {
+		fmt.Println("Container with id ", id, " not found")
+		c.IndentedJSON(http.StatusNotFound, gin.H{"message": "Container not found"})
+		return
+	}
 
+	// delete ip tables rule for the exposed ports
+	// inspect the container
+	inspect, err := cli.ContainerInspect(context.Background(), id)
+	if err != nil {
+		fmt.Println("Unable to inspect the container ", id)
+		c.IndentedJSON(http.StatusInternalServerError, gin.H{"message": "Unable to inspect the container"})
+		return
+	}
+
+	for _, port := range inspect.HostConfig.PortBindings {
+		for _, binding := range port {
+			port, err := strconv.Atoi(binding.HostPort)
+			if err != nil {
+				fmt.Println("Unable to convert the port")
+				c.IndentedJSON(http.StatusInternalServerError, gin.H{"message": "Unable to convert the port"})
+				return
+			}
+			if runtime.GOOS != "windows" {
+				cmd := exec.Command("iptables", "-D", "INPUT", "-p", "tcp", "--dport", fmt.Sprintf("%d", port), "-j", "ACCEPT")
+				err = cmd.Run()
+				if err != nil {
+					fmt.Println("Unable to delete the iptables rule")
+					c.IndentedJSON(http.StatusInternalServerError, gin.H{"message": "Unable to delete the iptables rule"})
+					return
+				}
+			}
+		}
+	}
+
+	StopContainer(id)
 	err = cli.ContainerRemove(context.Background(), id, container.RemoveOptions{})
 	if err != nil {
 		fmt.Println("Unable to remove the container ", id)
 		c.IndentedJSON(http.StatusInternalServerError, gin.H{"message": "Unable to remove the container"})
 		return
 	}
-	fmt.Println("Container ", id, " removed")
+	LogContainerDestruction(id)
+	c.IndentedJSON(http.StatusOK, gin.H{"message": "Container with id " + id + " removed"})
 }
 
 func StopContainer(id string) {

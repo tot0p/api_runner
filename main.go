@@ -18,6 +18,7 @@ func main() {
 			panic(err)
 		}
 	}
+	handlers.InitMongo()
 	router := gin.Default()
 	router.GET("/vm", handlers.GetAllContainersFromVM)
 	router.GET("/vm/:id/containers", handlers.GetContainersFromVM)
