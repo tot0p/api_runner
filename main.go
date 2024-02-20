@@ -18,6 +18,7 @@ func main() {
 	router := gin.Default()
 	router.GET("/vm", handlers.GetAllContainersFromVM)
 	router.GET("/vm/:id/containers", handlers.GetContainersFromVM)
+	router.GET("/ping", handlers.Ping)
 	router.POST("/vm", handlers.CreateContainer)
 	router.POST("/build", handlers.BuildImage)
 	router.DELETE("/vm/:id", handlers.DeleteContainer)

@@ -203,9 +203,9 @@ func BuildImage(c *gin.Context) {
 	tarWriter := tar2.NewWriter(&buf)
 
 	contents := `FROM nginx
-COPY . /usr/share/nginx/html
-CMD ["nginx", "-g", "daemon off;"]
-`
+		COPY . /usr/share/nginx/html
+		CMD ["nginx", "-g", "daemon off;"]
+		`
 
 	header := &tar2.Header{
 		Name:     "Dockerfile",
@@ -383,4 +383,8 @@ func GetFreePort() (port int, err error) {
 		}
 	}
 	return
+}
+
+func Ping(c *gin.Context) {
+	c.IndentedJSON(http.StatusOK, gin.H{"message": "pong"})
 }
