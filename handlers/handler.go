@@ -432,3 +432,8 @@ func GetFreePort() (port int, err error) {
 func Ping(c *gin.Context) {
 	c.IndentedJSON(http.StatusOK, gin.H{"message": "pong"})
 }
+
+func GetMongoLogs(c *gin.Context) {
+	items := GetLogs()
+	c.IndentedJSON(http.StatusOK, items)
+}

@@ -98,14 +98,17 @@ func LogContainerDestruction(containerID string) {
 	}
 }
 
-func GetLogs() []Item {
-	cursor, err := mongoClient.Database("logs").Collection("docker").Find(context.TODO(), nil)
+func GetLogs() []map[string]interface{} {
+	coll := mongoClient.Database("logs").Collection("docker")
+	findOptions := options.Find()
+	findOptions.SetLimit(5)
+	cursor, err := coll.Find(context.TODO(), bson.D{}, findOptions)
 	if err != nil {
-		fmt.Println(err)
+		fmt.Println(err, "Unable to find logs")
 	}
-	var items []Item
+	var items []map[string]interface{}
 	if err = cursor.All(context.TODO(), &items); err != nil {
-		fmt.Println(err)
+		fmt.Println(err, "Error with cursor")
 	}
 	return items
 }
