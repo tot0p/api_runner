@@ -5,15 +5,18 @@ import (
 	"fmt"
 	"github.com/gin-gonic/gin"
 	"os/exec"
+	"runtime"
 )
 
 func main() {
 
 	// open port 80
-	cmd := exec.Command("iptables", "-A", "INPUT", "-p", "tcp", "--dport", "80", "-j", "ACCEPT")
-	err := cmd.Run()
-	if err != nil {
-		panic(err)
+	if runtime.GOOS != "windows" {
+		cmd := exec.Command("iptables", "-A", "INPUT", "-p", "tcp", "--dport", "80", "-j", "ACCEPT")
+		err := cmd.Run()
+		if err != nil {
+			panic(err)
+		}
 	}
 	router := gin.Default()
 	router.GET("/vm", handlers.GetAllContainersFromVM)
