@@ -1,8 +1,6 @@
 package handlers
 
 import (
-	tar2 "archive/tar"
-	"bytes"
 	"context"
 	"fmt"
 	"github.com/docker/docker/api/types"
@@ -13,7 +11,9 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os/exec"
 	"strconv"
+	"strings"
 )
 
 type VM struct {
@@ -74,12 +74,14 @@ func GetAllContainersFromVM(c *gin.Context) {
 	cli, err := client.NewClientWithOpts(client.FromEnv)
 	if err != nil {
 		fmt.Println("Unable to create docker client")
-		panic(err)
+		c.IndentedJSON(http.StatusInternalServerError, gin.H{"message": "Unable to create docker client"})
+		return
 	}
 	cli.NegotiateAPIVersion(context.Background())
 	containers, err := cli.ContainerList(context.Background(), container.ListOptions{All: true})
 	if err != nil {
-		panic(err)
+		c.IndentedJSON(http.StatusInternalServerError, gin.H{"message": "Unable to list the containers"})
+		return
 	}
 	var containerList []Container
 	for _, contained := range containers {
@@ -99,12 +101,14 @@ func GetContainersFromVM(c *gin.Context) {
 	cli, err := client.NewClientWithOpts(client.FromEnv)
 	if err != nil {
 		fmt.Println("Unable to create docker client")
-		panic(err)
+		c.IndentedJSON(http.StatusInternalServerError, gin.H{"message": "Unable to create docker client"})
+		return
 	}
 	cli.NegotiateAPIVersion(context.Background())
 	containers, err := cli.ContainerList(context.Background(), container.ListOptions{All: true})
 	if err != nil {
-		panic(err)
+		c.IndentedJSON(http.StatusInternalServerError, gin.H{"message": "Unable to list the containers"})
+		return
 	}
 
 	id := c.Param("id")
@@ -122,7 +126,8 @@ func CreateContainer(c *gin.Context) {
 	cli, err := client.NewClientWithOpts(client.FromEnv)
 	if err != nil {
 		fmt.Println("Unable to create docker client")
-		panic(err)
+		c.IndentedJSON(http.StatusInternalServerError, gin.H{"message": "Unable to create docker client"})
+		return
 	}
 	cli.NegotiateAPIVersion(context.Background())
 
@@ -141,17 +146,21 @@ func CreateContainer(c *gin.Context) {
 		reader, err := cli.ImagePull(context.Background(), containerRequest.ImageName, types.ImagePullOptions{})
 		if err != nil {
 			fmt.Println("Unable to pull the image")
-			panic(err)
+			c.IndentedJSON(http.StatusInternalServerError, gin.H{"message": "Unable to pull the image"})
+			return
 		}
 		defer reader.Close()
 		_, err = io.ReadAll(reader)
 		if err != nil {
-			panic(err)
+			fmt.Println("Unable to read the image")
+			c.IndentedJSON(http.StatusInternalServerError, gin.H{"message": "Unable to read the image"})
+			return
 		}
 		_, _, err = cli.ImageInspectWithRaw(context.Background(), containerRequest.ImageName)
 		if err != nil {
 			fmt.Println("Unable to inspect the image")
-			panic(err)
+			c.IndentedJSON(http.StatusInternalServerError, gin.H{"message": "Unable to inspect the image"})
+			return
 		}
 	}
 
@@ -174,12 +183,14 @@ func CreateContainer(c *gin.Context) {
 	)
 	if err != nil {
 		fmt.Println("Unable to create the container")
-		panic(err)
+		c.IndentedJSON(http.StatusInternalServerError, gin.H{"message": "Unable to create the container"})
+		return
 	}
 	err = cli.ContainerStart(context.Background(), cont.ID, container.StartOptions{})
 	if err != nil {
 		fmt.Println("Unable to start the container")
-		panic(err)
+		c.IndentedJSON(http.StatusInternalServerError, gin.H{"message": "Unable to start the container"})
+		return
 	}
 }
 
@@ -187,7 +198,8 @@ func BuildImage(c *gin.Context) {
 	cli, err := client.NewClientWithOpts(client.FromEnv)
 	if err != nil {
 		fmt.Println("Unable to create docker client")
-		panic(err)
+		c.IndentedJSON(http.StatusInternalServerError, gin.H{"message": "Unable to create docker client"})
+		return
 	}
 	cli.NegotiateAPIVersion(context.Background())
 
@@ -198,58 +210,16 @@ func BuildImage(c *gin.Context) {
 		return
 	}
 
-	// Create a tar file with the Dockerfile
-	var buf bytes.Buffer
-	tarWriter := tar2.NewWriter(&buf)
+	splitted := strings.Split(imageRequest.RepositoryURL, "/")
+	imageName := splitted[len(splitted)-1]
 
-	contents := `FROM nginx
-		COPY . /usr/share/nginx/html
-		CMD ["nginx", "-g", "daemon off;"]
-		`
-
-	header := &tar2.Header{
-		Name:     "Dockerfile",
-		Mode:     0777,
-		Size:     int64(len(contents)),
-		Typeflag: tar2.TypeReg,
-	}
-
-	if err := tarWriter.WriteHeader(header); err != nil {
-		fmt.Println("Unable to write the header")
-		panic(err)
-	}
-
-	if _, err := tarWriter.Write([]byte(contents)); err != nil {
-		fmt.Println("Unable to write the content")
-		panic(err)
-	}
-
-	if err := tarWriter.Close(); err != nil {
-		fmt.Println("Unable to close the writer")
-		panic(err)
-	}
-
-	reader := bytes.NewReader(buf.Bytes())
-
-	BuildOptions := types.ImageBuildOptions{
-		Context:    reader,
-		Dockerfile: "Dockerfile",
-		Tags:       []string{"nosql:1.0.0"},
-	}
-
-	resp, err := cli.ImageBuild(context.Background(), reader, BuildOptions)
+	cmd := exec.Command("docker", "build", imageRequest.RepositoryURL, "-t", imageName)
+	err = cmd.Run()
 	if err != nil {
-		fmt.Println("Unable to build the image")
-		panic(err)
+		fmt.Println("Unable to build the image from: ", imageRequest.RepositoryURL)
+		c.IndentedJSON(http.StatusInternalServerError, gin.H{"message": "Unable to build the image"})
+		return
 	}
-
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		fmt.Println("Unable to read the response")
-		panic(err)
-	}
-	fmt.Println(string(body))
 
 	fmt.Println("Image built")
 }
@@ -258,7 +228,8 @@ func DeleteContainer(c *gin.Context) {
 	cli, err := client.NewClientWithOpts(client.FromEnv)
 	if err != nil {
 		fmt.Println("Unable to create docker client")
-		panic(err)
+		c.IndentedJSON(http.StatusInternalServerError, gin.H{"message": "Unable to create docker client"})
+		return
 	}
 	cli.NegotiateAPIVersion(context.Background())
 
@@ -268,7 +239,8 @@ func DeleteContainer(c *gin.Context) {
 	err = cli.ContainerRemove(context.Background(), id, container.RemoveOptions{})
 	if err != nil {
 		fmt.Println("Unable to remove the container ", id)
-		panic(err)
+		c.IndentedJSON(http.StatusInternalServerError, gin.H{"message": "Unable to remove the container"})
+		return
 	}
 	fmt.Println("Container ", id, " removed")
 }
@@ -277,14 +249,14 @@ func StopContainer(id string) {
 	cli, err := client.NewClientWithOpts(client.FromEnv)
 	if err != nil {
 		fmt.Println("Unable to create docker client")
-		panic(err)
+		return
 	}
 	cli.NegotiateAPIVersion(context.Background())
 
 	err = cli.ContainerStop(context.Background(), id, container.StopOptions{})
 	if err != nil {
 		fmt.Println("Unable to stop the container ", id)
-		panic(err)
+		return
 	}
 	fmt.Println("Container ", id, " stopped")
 
