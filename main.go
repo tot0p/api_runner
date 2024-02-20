@@ -27,5 +27,5 @@ func main() {
 	router.DELETE("/vm/:id", handlers.DeleteContainer)
 
 	fmt.Println("Server is running on localhost:80")
-	router.Run("localhost:80")
+	router.Run(":80")
 }
