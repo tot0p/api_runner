@@ -12,21 +12,11 @@ import (
 	"net"
 	"net/http"
 	"os/exec"
+	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 )
-
-type VM struct {
-	ID     string `json:"id"`
-	Region string `json:"region"`
-}
-
-var VMs = []VM{
-	{ID: "1", Region: "usa"},
-	{ID: "2", Region: "fra"},
-	{ID: "3", Region: "ger"},
-	{ID: "4", Region: "usa"},
-}
 
 type Container struct {
 	ID     string `json:"Id"`
@@ -38,36 +28,11 @@ type Container struct {
 }
 
 type ContainerRequest struct {
-	ImageName     string `json:"imageName"`
-	ContainerName string `json:"containerName"`
-	Port          string `json:"port"`
+	Link string `json:"link"`
 }
 
 type ImageRequest struct {
 	RepositoryURL string `json:"repository"`
-}
-
-func CreateVM(c *gin.Context) {
-	var newVM VM
-	if err := c.ShouldBindJSON(&newVM); err != nil {
-		c.JSON(400, gin.H{"error": err.Error()})
-		return
-	}
-
-	VMs = append(VMs, newVM)
-	c.IndentedJSON(http.StatusCreated, newVM)
-}
-
-func DeleteInstance(c *gin.Context) {
-	id := c.Param("id")
-	for i, instance := range VMs {
-		if instance.ID == id {
-			VMs = append(VMs[:i], VMs[i+1:]...)
-			c.IndentedJSON(http.StatusOK, gin.H{"message": "instance deleted"})
-			return
-		}
-	}
-	c.IndentedJSON(http.StatusNotFound, gin.H{"message": "instance not found"})
 }
 
 func GetAllContainersFromVM(c *gin.Context) {
@@ -139,47 +104,91 @@ func CreateContainer(c *gin.Context) {
 		return
 	}
 
+	pattern := `https:\/\/github\.com\/\w+\/(\w+\.git)`
+
+	// Compile the regular expression pattern
+	re := regexp.MustCompile(pattern)
+	var imageName string
+	if re.MatchString(containerRequest.Link) {
+		// Find the matched string
+		match := re.FindStringSubmatch(containerRequest.Link)
+		imageName = match[1]
+	} else {
+		c.IndentedJSON(http.StatusBadRequest, gin.H{"message": "Invalid repository link"})
+		return
+	}
+
 	// check if the image exists
-	_, _, err = cli.ImageInspectWithRaw(context.Background(), containerRequest.ImageName)
+	_, _, err = cli.ImageInspectWithRaw(context.Background(), imageName)
 	if err != nil {
-		// pull the image if it doesn't exist
-		reader, err := cli.ImagePull(context.Background(), containerRequest.ImageName, types.ImagePullOptions{})
+		// build the image from the repository link
+		cmd := exec.Command("docker", "build", containerRequest.Link, "-t", imageName)
+		err = cmd.Run()
 		if err != nil {
-			fmt.Println("Unable to pull the image")
-			c.IndentedJSON(http.StatusInternalServerError, gin.H{"message": "Unable to pull the image"})
+			fmt.Println("Unable to build the image from: ", containerRequest.Link)
+			c.IndentedJSON(http.StatusInternalServerError, gin.H{"message": "Unable to build the image"})
 			return
 		}
-		defer reader.Close()
-		_, err = io.ReadAll(reader)
+		// check if the image exists
+		_, _, err = cli.ImageInspectWithRaw(context.Background(), imageName)
 		if err != nil {
-			fmt.Println("Unable to read the image")
-			c.IndentedJSON(http.StatusInternalServerError, gin.H{"message": "Unable to read the image"})
-			return
-		}
-		_, _, err = cli.ImageInspectWithRaw(context.Background(), containerRequest.ImageName)
-		if err != nil {
-			fmt.Println("Unable to inspect the image")
-			c.IndentedJSON(http.StatusInternalServerError, gin.H{"message": "Unable to inspect the image"})
+			fmt.Println("Unable to find the image: ", imageName)
+			c.IndentedJSON(http.StatusInternalServerError, gin.H{"message": "Unable to find the image"})
 			return
 		}
 	}
 
-	var portBinding nat.Port
-	portBinding, err = nat.NewPort("tcp", containerRequest.Port)
+	// list the ports of the image
+	inspect, _, err := cli.ImageInspectWithRaw(context.Background(), imageName)
+	if err != nil {
+		fmt.Println("Unable to inspect the image")
+		c.IndentedJSON(http.StatusInternalServerError, gin.H{"message": "Unable to inspect the image"})
+		return
+	}
+
+	exposedPorts := make(nat.PortMap)
+	for k := range inspect.Config.ExposedPorts {
+		// get a free port
+		port, err := FindFreePort()
+		if err != nil {
+			fmt.Println("Unable to find a free port")
+			c.IndentedJSON(http.StatusInternalServerError, gin.H{"message": "Unable to find a free port"})
+			return
+		}
+		hostBinding := nat.PortBinding{
+			HostIP:   "0.0.0.0",
+			HostPort: fmt.Sprintf("%d", port),
+		}
+		containerPort, err := nat.NewPort("tcp", fmt.Sprintf("%d", k.Int()))
+		if err != nil {
+			fmt.Println("Unable to get the port")
+			c.IndentedJSON(http.StatusInternalServerError, gin.H{"message": "Unable to get the port"})
+			return
+		}
+		if runtime.GOOS != "windows" {
+			cmd := exec.Command("iptables", "-A", "INPUT", "-p", "tcp", "--dport", fmt.Sprintf("%d", port), "-j", "ACCEPT")
+			err = cmd.Run()
+			if err != nil {
+				panic(err)
+			}
+		}
+
+		exposedPorts[containerPort] = []nat.PortBinding{hostBinding}
+		fmt.Println("port: ", k.Int(), "was mapped to: ", port)
+	}
 
 	// Create a container
 	cont, err := cli.ContainerCreate(
 		context.Background(),
 		&container.Config{
-			Image: containerRequest.ImageName,
-			ExposedPorts: nat.PortSet{
-				portBinding: struct{}{},
-			},
+			Image: imageName,
 		},
-		&container.HostConfig{},
+		&container.HostConfig{
+			PortBindings: exposedPorts,
+		},
 		nil,
 		nil,
-		containerRequest.ContainerName,
+		"",
 	)
 	if err != nil {
 		fmt.Println("Unable to create the container")
@@ -192,6 +201,32 @@ func CreateContainer(c *gin.Context) {
 		c.IndentedJSON(http.StatusInternalServerError, gin.H{"message": "Unable to start the container"})
 		return
 	}
+	fmt.Println(cont.ID)
+	ports := make(map[int]int)
+	for k, v := range exposedPorts {
+		port, err := strconv.Atoi(v[0].HostPort)
+		if err != nil {
+			fmt.Println("Unable to convert the port")
+			c.IndentedJSON(http.StatusInternalServerError, gin.H{"message": "Unable to convert the port"})
+			return
+		}
+		ports[k.Int()] = port
+	}
+
+	c.IndentedJSON(http.StatusOK, gin.H{"message": "Container with id " + cont.ID + " created and started", "id": cont.ID, "ports": ports})
+}
+
+func FindFreePort() (int, error) {
+	addr, err := net.ResolveTCPAddr("tcp", "localhost:0")
+	if err != nil {
+		return 0, err
+	}
+	l, err := net.ListenTCP("tcp", addr)
+	if err != nil {
+		return 0, err
+	}
+	defer l.Close()
+	return l.Addr().(*net.TCPAddr).Port, nil
 }
 
 func BuildImage(c *gin.Context) {
