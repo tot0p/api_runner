@@ -4,7 +4,29 @@ api_runner is project linked to [runner](https://github.com/tot0p/runner) projec
 
 ## docs of the API
 
-Comming soon
+| Method  |       Route        |                Description                 |
+|:-------:|:------------------:|:------------------------------------------:|
+|   GET   |        /vm         |             Get all containers             |
+|   GET   | /vm/:id/containers |       Get container by container id        |
+|   GET   |       /ping        |             Get ping response              |
+|   GET   |       /logs        | Get logs of containers creation & deletion |
+|  POST   |        /vm         |             Create a container             |
+|  POST   |       /build       |      Build an image from a Dockerfile      |
+| DELETE  |      /vm/:id       |      Delete container by container id      |
+
+### Create a container: (POST /vm)
+```json
+{
+  "link": "https://github.com/username/repo"
+}
+```
+
+### Build an image from a Dockerfile: (POST /build)
+```json
+{
+  "repository": "https://github.com/username/repo"
+}
+```
 
 ## License
 
